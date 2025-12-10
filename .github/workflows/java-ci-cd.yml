@@ -1,4 +1,4 @@
-name: Java CI/CD Pipeline with SAST
+name: Java CI/CD Pipeline with SAST and SCA
 
 on:
   pull_request:
@@ -46,3 +46,20 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep-results.sarif
+
+  sca:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        run: mvn org.owasp:dependency-check-maven:check -Dformat=HTML -DsuppressionFiles=dependency-check-suppressions.xml
+
+      - name: Upload Dependency-Check report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+          retention-days: 7
