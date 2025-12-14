@@ -17,7 +17,7 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        .anyRequest().permitAll()
+                        .requestMatchers("/actuator/**").hasRole("ADMIN")
                 )
                 .headers(headers -> headers
                         .contentSecurityPolicy(csp -> csp
@@ -25,6 +25,7 @@ public class SecurityConfig {
                         )
                         .frameOptions(frame -> frame.deny())
                         .xssProtection(xss -> xss.headerValue(XssProtectionHeaderWriter.HeaderValue.ENABLED_MODE_BLOCK))
+
                 );
         return http.build();
     }
