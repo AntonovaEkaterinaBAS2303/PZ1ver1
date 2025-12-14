@@ -16,16 +16,15 @@ public class PluginLoader {
 
     public void tryLoad() {
         if (pluginUrl == null || pluginUrl.isBlank()) return;
-        try {
-            URL url = new URL(pluginUrl);
-            try (URLClassLoader cl = new URLClassLoader(new URL[]{url}, this.getClass().getClassLoader())) {
-                Class<?> clazz = Class.forName("com.example.PluginMain", true, cl);
-                Method m = clazz.getDeclaredMethod("init");
-                m.invoke(null);
-                log.info("Плагин загружен с URL: {}", pluginUrl);
-            }
-        } catch (Exception e) {
-            log.error("Ошибка загрузки плагина: ", e);
+
+        if (pluginUrl.startsWith("http://") || pluginUrl.startsWith("https://")) {
+            log.warn("Загрузка плагинов из внешних источников запрещена");
+            return;
+        }
+
+        if (!pluginUrl.startsWith("file:/")) {
+            log.error("Разрешена только загрузка из локальных файлов");
+            return;
         }
     }
 }
