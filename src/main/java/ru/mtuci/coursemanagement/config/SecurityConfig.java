@@ -16,6 +16,7 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                        .csrfTokenRepository(csrfTokenRepository())
                 )
                 .headers(headers -> headers
                         .contentSecurityPolicy(csp -> csp
@@ -48,5 +49,20 @@ public class SecurityConfig {
                 );
 
         return http.build();
+    }
+
+    @Bean
+    public CookieCsrfTokenRepository csrfTokenRepository() {
+        CookieCsrfTokenRepository repository = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        repository.setCookieName("XSRF-TOKEN");
+        repository.setHeaderName("X-XSRF-TOKEN");
+        repository.setCookieHttpOnly(true);
+        repository.setCookiePath("/");
+        repository.setCookieMaxAge(3600);
+        repository.setSecure(false);
+        repository.setCookieCustomizer(cookie -> {
+            cookie.sameSite("Strict");
+        });
+        return repository;
     }
 }
