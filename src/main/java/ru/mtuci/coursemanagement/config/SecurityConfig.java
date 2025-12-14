@@ -13,13 +13,14 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-                // Включить CSRF защиту (основное требование из отчета)
-                .csrf(csrf -> csrf.disable())
-                // Базовая защита заголовков
+
+                .csrf(csrf -> {})
                 .headers(headers -> headers
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives("default-src 'self'; script-src 'self'")
+                        )
                         .frameOptions(frame -> frame.deny())
                 )
-                // Авторизация
                 .authorizeHttpRequests(auth -> auth
                         .anyRequest().permitAll()
                 );
