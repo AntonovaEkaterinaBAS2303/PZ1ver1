@@ -37,10 +37,20 @@ public class SecurityConfig {
                         .requestMatchers("/login", "/register").permitAll()
                         .anyRequest().authenticated()
                 )
+                .httpBasic(httpBasic -> httpBasic.disable())
                 .formLogin(form -> form
                         .loginPage("/login")
                         .defaultSuccessUrl("/")
+                        .failureUrl("/login?error=true")
                         .permitAll()
+                )
+                .sessionManagement(session -> session
+                        .maximumSessions(1)
+                        .maxSessionsPreventsLogin(false)
+                )
+                .rememberMe(rememberMe -> rememberMe
+                        .key("uniqueAndSecret")
+                        .tokenValiditySeconds(86400)
                 )
                 .logout(logout -> logout
                         .logoutUrl("/logout")
