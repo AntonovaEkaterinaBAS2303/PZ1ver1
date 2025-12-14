@@ -26,7 +26,7 @@ management:
       show-details: never
 server:
   error:
-    include-stacktrace: ALWAYS
+    include-stacktrace: NEVER
   servlet:
     session:
       cookie:
