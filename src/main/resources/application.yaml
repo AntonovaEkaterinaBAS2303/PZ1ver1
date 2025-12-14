@@ -24,6 +24,11 @@ management:
 server:
   error:
     include-stacktrace: ALWAYS
+  servlet:
+    session:
+      cookie:
+        same-site: strict
+        http-only: true
 app:
   plugin:
     url:
