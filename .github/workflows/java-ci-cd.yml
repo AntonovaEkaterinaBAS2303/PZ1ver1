@@ -1,4 +1,4 @@
-name: Java CI/CD Pipeline with SAST, SCA and DAST
+name: Java CI/CD Pipeline with SAST, SCA, DAST and Secret Detection
 
 on:
   pull_request:
@@ -7,8 +7,121 @@ on:
     branches: [ main ]
 
 jobs:
-  build-app:
+  secret-check-bash-only:
+    name: Bash Secret Check
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run smart bash checks (без самопроверки)
+        run: |
+          echo "🔍 Running smart secret detection (excluding workflow files)..."
+          
+          echo "=== CHECK 1: REAL database passwords in config ==="
+          REAL_SECRET_FOUND=0
+          
+          # Проверяем только файлы конфигурации (исключаем .github и workflow файлы)
+          for file in $(find . -name "application*.yaml" -o -name "application*.yml" -o -name "application*.properties" 2>/dev/null | grep -v ".github"); do
+            echo "Checking $file"
+          
+            # Читаем файл построчно для точной проверки
+            line_num=0
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_num=$((line_num + 1))
+          
+              # Проверяем строки с password
+              if echo "$line" | grep -q -i "password"; then
+                # Пропускаем: комментарии, пустые значения, переменные окружения, примеры
+                if echo "$line" | grep -q -E "(#|//|\$\{|\${|example|test|changeme|dummy|placeholder|TODO|FIXME)"; then
+                  continue
+                fi
+          
+                # Пропускаем пустые пароли: password: или password=''
+                if echo "$line" | grep -q -E "password:\s*$|password:\s*['\"]{2}"; then
+                  continue
+                fi
+          
+                # Пропускаем если это просто объявление без значения
+                if echo "$line" | grep -q "password:" && ! echo "$line" | grep -q "password:\s*\S"; then
+                  continue
+                fi
+          
+                # Если дошли сюда - возможно реальный пароль
+                echo "  ⚠️  Line $line_num: $line"
+                echo "      → Check if this is a real password. If yes, use: password: \${DB_PASSWORD}"
+                REAL_SECRET_FOUND=1
+              fi
+            done < "$file"
+          done
+          
+          echo ""
+          echo "=== CHECK 2: .env files with actual values ==="
+          ENV_WITH_VALUES=0
+          if [ -f ".env" ]; then
+            echo "  Found .env file, checking if it contains actual values..."
+          
+            # Проверяем есть ли реальные значения (не комментарии и не пустые)
+            if grep -v "^#" .env | grep -v "^$" | grep -q "="; then
+              echo "  ❌ .env file contains actual values (not just template)"
+              echo "      → Should be in .gitignore. Create .env.example for template."
+              ENV_WITH_VALUES=1
+            else
+              echo "  ℹ️  .env is empty or only comments (ok for template)"
+            fi
+          fi
+          
+          echo ""
+          echo "=== CHECK 3: Obvious API keys/secrets (excluding workflow files) ==="
+          OBVIOUS_SECRETS=0
+          
+          # Ищем очень длинные строки (40+ символов) - возможные API ключи
+          # Исключаем workflow файлы и тестовые файлы
+          if find . -type f -name "*.java" ! -path "./.github/*" ! -path "*/test/*" ! -name "*Test.java" \
+            -exec grep -n '"[A-Za-z0-9]\{40,\}"' {} \; 2>/dev/null | \
+            head -3 > /tmp/long_strings.txt && [ -s /tmp/long_strings.txt ]; then
+            echo "  ⚠️  Found very long strings (might be API keys):"
+            head -3 /tmp/long_strings.txt
+            OBVIOUS_SECRETS=1
+          fi
+          
+          # Ищем паттерны типа AWS ключей, JWT токенов
+          # Исключаем .github директорию (workflow файлы) и тестовые файлы
+          if find . -type f \( -name "*.java" -o -name "*.properties" -o -name "*.yaml" -o -name "*.yml" \) \
+            ! -path "./.github/*" ! -path "*/test/*" ! -name "*Test.java" \
+            -exec grep -n -i "AKIA[0-9A-Z]\{16\}\|eyJ[a-zA-Z0-9_-]\{10,\}\\.[a-zA-Z0-9_-]\{10,\}\\.[a-zA-Z0-9_-]\{10,\}" {} \; 2>/dev/null | \
+            head -3 > /tmp/pattern_secrets.txt && [ -s /tmp/pattern_secrets.txt ]; then
+            echo "  ⚠️  Found pattern matches (AWS keys, JWT tokens):"
+            head -3 /tmp/pattern_secrets.txt
+            OBVIOUS_SECRETS=1
+          fi
+          
+          echo ""
+          echo "=== FINAL DECISION ==="
+          
+          # Решаем, блокировать ли pipeline
+          if [ $ENV_WITH_VALUES -eq 1 ] || [ $OBVIOUS_SECRETS -eq 1 ]; then
+            echo "❌ CRITICAL: Real secrets found!"
+            echo "   Pipeline BLOCKED."
+            echo "::error::REAL SECRETS DETECTED! Fix before continuing."
+            exit 1
+          elif [ $REAL_SECRET_FOUND -eq 1 ]; then
+            echo "⚠️  WARNING: Potential issues found"
+            echo "   Pipeline will CONTINUE, but please review:"
+            echo "   1. Check if 'password:' lines need values"
+            echo "   2. If real passwords exist, use environment variables"
+            echo "::warning::Review potential secrets in code"
+            # НЕ выходим с ошибкой - только предупреждение
+          else
+            echo "✅ All checks passed"
+            echo "::notice::No secrets detected"
+          fi
+
+  build-app:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: secret-check-bash-only
 
     container:
       image: maven:3.9.10-eclipse-temurin-17
@@ -26,7 +139,7 @@ jobs:
       - name: Upload JAR artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vuln
+          name: vuln-app
           path: ./target/*.jar
 
   sast:
@@ -64,7 +177,8 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - run: mvn verify -DskipTests
+      - name: Run OWASP Dependency Check
+        run: mvn org.owasp:dependency-check-maven:check -DskipTests
 
       - uses: actions/upload-artifact@v4
         with:
@@ -83,7 +197,7 @@ jobs:
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
         with:
-          name: vuln
+          name: vuln-app
           path: ./target
 
       - name: Create ZAP rules file
@@ -130,7 +244,7 @@ jobs:
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
         with:
-          name: vuln
+          name: vuln-app
           path: ./target
 
       - name: Create ZAP rules file
@@ -165,3 +279,39 @@ jobs:
         with:
           name: zap-api-report
           path: zap-api-report.html
+
+  pipeline-summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [secret-check-bash-only, build-app, sast, sca, zap-baseline, zap-api]  # ✅ ИСПРАВЛЕНО!
+    if: always()
+
+    steps:
+      - name: Create summary
+        run: |
+          echo "# Security Pipeline Results" > summary.md
+          echo "Date: $(date)" >> summary.md
+          echo "" >> summary.md
+          
+          echo "## Job Status" >> summary.md
+          echo "- Secret Detection: ${{ needs.secret-check-bash-only.result }}" >> summary.md
+          echo "- Build: ${{ needs.build-app.result }}" >> summary.md
+          echo "- SAST: ${{ needs.sast.result }}" >> summary.md
+          echo "- SCA: ${{ needs.sca.result }}" >> summary.md
+          echo "- DAST (ZAP Baseline): ${{ needs.zap-baseline.result }}" >> summary.md
+          echo "- DAST (ZAP API): ${{ needs.zap-api.result }}" >> summary.md
+          
+          if [[ "${{ needs.secret-check-bash-only.result }}" == "failure" ]]; then
+            echo "❌ Pipeline blocked: Secrets detected" >> $GITHUB_STEP_SUMMARY
+            echo "::error::Secrets detected in code" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.secret-check-bash-only.result }}" == "success" ]]; then
+            echo "✅ No secrets detected - Pipeline passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Secret check status: ${{ needs.secret-check-bash-only.result }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-summary
+          path: summary.md
