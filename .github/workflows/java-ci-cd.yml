@@ -1,4 +1,4 @@
-name: Java CI/CD Pipeline with SAST, SCA, DAST and Secret Detection
+name: Java CI/CD Pipeline with SAST, SCA, DAST, Fuzzing and Secret Detection
 
 on:
   pull_request:
@@ -17,104 +17,55 @@ jobs:
 
       - name: Run smart bash checks (без самопроверки)
         run: |
-          echo "🔍 Running smart secret detection (excluding workflow files)..."
-          
-          echo "=== CHECK 1: REAL database passwords in config ==="
           REAL_SECRET_FOUND=0
-          
-          # Проверяем только файлы конфигурации (исключаем .github и workflow файлы)
+          ENV_WITH_VALUES=0
+          OBVIOUS_SECRETS=0
+
           for file in $(find . -name "application*.yaml" -o -name "application*.yml" -o -name "application*.properties" 2>/dev/null | grep -v ".github"); do
-            echo "Checking $file"
-          
-            # Читаем файл построчно для точной проверки
             line_num=0
             while IFS= read -r line || [ -n "$line" ]; do
               line_num=$((line_num + 1))
-          
-              # Проверяем строки с password
               if echo "$line" | grep -q -i "password"; then
-                # Пропускаем: комментарии, пустые значения, переменные окружения, примеры
                 if echo "$line" | grep -q -E "(#|//|\$\{|\${|example|test|changeme|dummy|placeholder|TODO|FIXME)"; then
                   continue
                 fi
-          
-                # Пропускаем пустые пароли: password: или password=''
                 if echo "$line" | grep -q -E "password:\s*$|password:\s*['\"]{2}"; then
                   continue
                 fi
-          
-                # Пропускаем если это просто объявление без значения
                 if echo "$line" | grep -q "password:" && ! echo "$line" | grep -q "password:\s*\S"; then
                   continue
                 fi
-          
-                # Если дошли сюда - возможно реальный пароль
-                echo "  ⚠️  Line $line_num: $line"
-                echo "      → Check if this is a real password. If yes, use: password: \${DB_PASSWORD}"
+                echo "Line $line_num: $line"
                 REAL_SECRET_FOUND=1
               fi
             done < "$file"
           done
-          
-          echo ""
-          echo "=== CHECK 2: .env files with actual values ==="
-          ENV_WITH_VALUES=0
+
           if [ -f ".env" ]; then
-            echo "  Found .env file, checking if it contains actual values..."
-          
-            # Проверяем есть ли реальные значения (не комментарии и не пустые)
             if grep -v "^#" .env | grep -v "^$" | grep -q "="; then
-              echo "  ❌ .env file contains actual values (not just template)"
-              echo "      → Should be in .gitignore. Create .env.example for template."
               ENV_WITH_VALUES=1
-            else
-              echo "  ℹ️  .env is empty or only comments (ok for template)"
             fi
           fi
-          
-          echo ""
-          echo "=== CHECK 3: Obvious API keys/secrets (excluding workflow files) ==="
-          OBVIOUS_SECRETS=0
-          
-          # Ищем очень длинные строки (40+ символов) - возможные API ключи
-          # Исключаем workflow файлы и тестовые файлы
+
           if find . -type f -name "*.java" ! -path "./.github/*" ! -path "*/test/*" ! -name "*Test.java" \
             -exec grep -n '"[A-Za-z0-9]\{40,\}"' {} \; 2>/dev/null | \
             head -3 > /tmp/long_strings.txt && [ -s /tmp/long_strings.txt ]; then
-            echo "  ⚠️  Found very long strings (might be API keys):"
-            head -3 /tmp/long_strings.txt
             OBVIOUS_SECRETS=1
           fi
-          
-          # Ищем паттерны типа AWS ключей, JWT токенов
-          # Исключаем .github директорию (workflow файлы) и тестовые файлы
-          if find . -type f \( -name "*.java" -o -name "*.properties" -o -name "*.yaml" -o -name "*.yml" \) \
+
+          if find . -type f $ -name "*.java" -o -name "*.properties" -o -name "*.yaml" -o -name "*.yml" $ \
             ! -path "./.github/*" ! -path "*/test/*" ! -name "*Test.java" \
             -exec grep -n -i "AKIA[0-9A-Z]\{16\}\|eyJ[a-zA-Z0-9_-]\{10,\}\\.[a-zA-Z0-9_-]\{10,\}\\.[a-zA-Z0-9_-]\{10,\}" {} \; 2>/dev/null | \
             head -3 > /tmp/pattern_secrets.txt && [ -s /tmp/pattern_secrets.txt ]; then
-            echo "  ⚠️  Found pattern matches (AWS keys, JWT tokens):"
-            head -3 /tmp/pattern_secrets.txt
             OBVIOUS_SECRETS=1
           fi
-          
-          echo ""
-          echo "=== FINAL DECISION ==="
-          
-          # Решаем, блокировать ли pipeline
+
           if [ $ENV_WITH_VALUES -eq 1 ] || [ $OBVIOUS_SECRETS -eq 1 ]; then
-            echo "❌ CRITICAL: Real secrets found!"
-            echo "   Pipeline BLOCKED."
             echo "::error::REAL SECRETS DETECTED! Fix before continuing."
             exit 1
           elif [ $REAL_SECRET_FOUND -eq 1 ]; then
-            echo "⚠️  WARNING: Potential issues found"
-            echo "   Pipeline will CONTINUE, but please review:"
-            echo "   1. Check if 'password:' lines need values"
-            echo "   2. If real passwords exist, use environment variables"
             echo "::warning::Review potential secrets in code"
-            # НЕ выходим с ошибкой - только предупреждение
           else
-            echo "✅ All checks passed"
             echo "::notice::No secrets detected"
           fi
 
@@ -142,176 +93,339 @@ jobs:
           name: vuln-app
           path: ./target/*.jar
 
-  sast:
-    name: SAST Security Scan
-    runs-on: ubuntu-latest
-    needs: build-app
-    steps:
-      - uses: actions/checkout@v4
-
-      - run: |
-          python3 -m pip install semgrep
-          semgrep scan --config=auto --sarif --output=semgrep-results.sarif .
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sast-sarif-report
-          path: semgrep-results.sarif
-          retention-days: 7
-
-      - uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: semgrep-results.sarif
-
-  sca:
-    name: SCA Dependency Check
-    runs-on: ubuntu-latest
-    needs: build-app
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
-
-      - name: Run OWASP Dependency Check
-        run: mvn org.owasp:dependency-check-maven:check -DskipTests
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          path: target/dependency-check-report.html
-          retention-days: 7
-
-  zap-baseline:
-    runs-on: ubuntu-latest
-    needs: build-app
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: vuln-app
-          path: ./target
-
-      - name: Create ZAP rules file
-        run: touch zap-rules.tsv
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Run application
-        run: |
-          java -jar target/*.jar &
-          sleep 30
-
-      - name: Make workspace writable for ZAP
-        run: chmod -R 777 "$GITHUB_WORKSPACE"
-
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.9.0
-        continue-on-error: true
-        with:
-          target: "http://localhost:8080"
-          rules_file_name: "zap-rules.tsv"
-          cmd_options: "-r zap-baseline-report.html"
-          allow_issue_writing: false
-
-      - name: Upload ZAP Baseline report
+      - name: Extract API specification (для фаззинга)
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-baseline-report
-          path: zap-baseline-report.html
-
-  zap-api:
-    runs-on: ubuntu-latest
-    needs: build-app
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: vuln-app
-          path: ./target
-
-      - name: Create ZAP rules file
-        run: touch zap-rules.tsv
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Run application
         run: |
-          java -jar target/*.jar &
-          sleep 30
+          if [ ! -f "openapi-spec.yaml" ]; then
+            cat > openapi-spec.yaml << 'EOF'
+openapi: 3.0.0
+info:
+  title: Application API
+  version: 1.0.0
+paths:
+  /api/login:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: OK
+  EOF
+  fi
 
-      - name: Make workspace writable for ZAP
-        run: chmod -R 777 "$GITHUB_WORKSPACE"
+- name: Upload API spec for fuzzing
+  uses: actions/upload-artifact@v4
+  with:
+    name: api-spec
+    path: openapi-spec.yaml
 
-      - name: ZAP API Scan
-        uses: zaproxy/action-api-scan@v0.10.0
-        continue-on-error: true
-        with:
-          target: "http://localhost:8080/v3/api-docs"
-          rules_file_name: "zap-rules.tsv"
-          cmd_options: "-f openapi -r zap-api-report.html"
-          allow_issue_writing: false
+sast:
+  name: SAST Security Scan
+  runs-on: ubuntu-latest
+  needs: build-app
 
-      - name: Upload ZAP API report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-api-report
-          path: zap-api-report.html
+  steps:
+    - uses: actions/checkout@v4
 
-  pipeline-summary:
-    name: Pipeline Summary
-    runs-on: ubuntu-latest
-    needs: [secret-check-bash-only, build-app, sast, sca, zap-baseline, zap-api]  # ✅ ИСПРАВЛЕНО!
-    if: always()
+    - run: |
+        python3 -m pip install semgrep
+        semgrep scan --config=auto --sarif --output=semgrep-results.sarif .
 
-    steps:
-      - name: Create summary
-        run: |
-          echo "# Security Pipeline Results" > summary.md
-          echo "Date: $(date)" >> summary.md
-          echo "" >> summary.md
-          
-          echo "## Job Status" >> summary.md
-          echo "- Secret Detection: ${{ needs.secret-check-bash-only.result }}" >> summary.md
-          echo "- Build: ${{ needs.build-app.result }}" >> summary.md
-          echo "- SAST: ${{ needs.sast.result }}" >> summary.md
-          echo "- SCA: ${{ needs.sca.result }}" >> summary.md
-          echo "- DAST (ZAP Baseline): ${{ needs.zap-baseline.result }}" >> summary.md
-          echo "- DAST (ZAP API): ${{ needs.zap-api.result }}" >> summary.md
-          
-          if [[ "${{ needs.secret-check-bash-only.result }}" == "failure" ]]; then
-            echo "❌ Pipeline blocked: Secrets detected" >> $GITHUB_STEP_SUMMARY
-            echo "::error::Secrets detected in code" >> $GITHUB_STEP_SUMMARY
-          elif [[ "${{ needs.secret-check-bash-only.result }}" == "success" ]]; then
-            echo "✅ No secrets detected - Pipeline passed" >> $GITHUB_STEP_SUMMARY
+    - uses: actions/upload-artifact@v4
+      with:
+        name: sast-sarif-report
+        path: semgrep-results.sarif
+        retention-days: 7
+
+    - uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: semgrep-results.sarif
+
+sca:
+  name: SCA Dependency Check
+  runs-on: ubuntu-latest
+  needs: build-app
+
+  steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Run OWASP Dependency Check
+      run: mvn org.owasp:dependency-check-maven:check -DskipTests
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dependency-check-report
+        path: target/dependency-check-report.html
+        retention-days: 7
+
+fuzzing:
+  name: Fuzzing Test
+  runs-on: ubuntu-latest
+  needs: build-app
+  timeout-minutes: 30
+
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download JAR artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: vuln-app
+        path: ./target
+
+    - name: Download API spec
+      uses: actions/download-artifact@v4
+      with:
+        name: api-spec
+        path: ./
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Start application
+      run: |
+        java -jar target/*.jar &
+        APP_PID=$!
+        echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+        sleep 30
+        if ! curl -s http://localhost:8080/actuator/health > /dev/null; then
+          echo "Application failed to start"
+          exit 1
+        fi
+
+    - name: Set up Python for Fuzzing
+      run: |
+        python -m pip install --upgrade pip
+        pip install httpx schemathesis pytest
+
+    - name: Run API Fuzzing with Schemathesis
+      continue-on-error: true
+      run: |
+        schemathesis run \
+          --base-url=http://localhost:8080 \
+          --checks=all \
+          --validate-schema=false \
+          --hypothesis-max-examples=50 \
+          --hypothesis-deadline=5000 \
+          --junit-xml=schemathesis-results.xml \
+          --report=junit.xml \
+          openapi-spec.yaml
+        
+        if [ -f "schemathesis-results.xml" ]; then
+          FAILURES=$(grep -o 'failures="[0-9]*"' schemathesis-results.xml | grep -o '[0-9]*' || echo "0")
+          TESTS=$(grep -o 'tests="[0-9]*"' schemathesis-results.xml | grep -o '[0-9]*' || echo "0")
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "::warning::Fuzzing found $FAILURES potential issues"
           else
-            echo "⚠️ Secret check status: ${{ needs.secret-check-bash-only.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "Fuzzing completed successfully"
           fi
+        else
+          echo "::warning::No fuzzing results generated"
+        fi
 
-      - name: Upload summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: pipeline-summary
-          path: summary.md
+    - name: Run Input Fuzzing with wfuzz
+      continue-on-error: true
+      run: |
+        pip install wfuzz
+        echo "Fuzzing GET endpoints"
+        wfuzz -c -z file,/usr/share/dict/words --hc 404 http://localhost:8080/FUZZ 2>/dev/null | head -20
+        if curl -s "http://localhost:8080/api/users" > /dev/null; then
+          echo "Fuzzing parameters"
+          wfuzz -c -z range,1-100 --hc 404 "http://localhost:8080/api/users?id=FUZZ" 2>/dev/null | head -10
+        fi
+
+    - name: Upload Fuzzing Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzzing-results
+        path: |
+          schemathesis-results.xml
+          junit.xml
+        retention-days: 7
+
+    - name: Generate Fuzzing Report
+      if: always()
+      run: |
+        echo "# Fuzzing Test Results" > fuzzing-report.md
+        echo "Date: $(date)" >> fuzzing-report.md
+        if [ -f "schemathesis-results.xml" ]; then
+          echo "## Schemathesis Results" >> fuzzing-report.md
+          head -50 schemathesis-results.xml >> fuzzing-report.md
+        fi
+        echo "## Summary" >> fuzzing-report.md
+        echo "- API Fuzzing: Completed" >> fuzzing-report.md
+        echo "- Input Fuzzing: Completed" >> fuzzing-report.md
+        echo "- Target: http://localhost:8080" >> fuzzing-report.md
+
+    - name: Upload Fuzzing Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzzing-report
+        path: fuzzing-report.md
+
+    - name: Stop application
+      if: always()
+      run: |
+        if [ -n "$APP_PID" ]; then
+          kill $APP_PID 2>/dev/null || true
+        fi
+        pkill -f "java.*8080" 2>/dev/null || true
+
+zap-baseline:
+  runs-on: ubuntu-latest
+  needs: [build-app, fuzzing]
+
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download JAR artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: vuln-app
+        path: ./target
+
+    - name: Create ZAP rules file
+      run: touch zap-rules.tsv
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Run application
+      run: |
+        java -jar target/*.jar &
+        sleep 30
+
+    - name: Make workspace writable for ZAP
+      run: chmod -R 777 "$GITHUB_WORKSPACE"
+
+    - name: ZAP Baseline Scan
+      uses: zaproxy/action-baseline@v0.9.0
+      continue-on-error: true
+      with:
+        target: "http://localhost:8080"
+        rules_file_name: "zap-rules.tsv"
+        cmd_options: "-r zap-baseline-report.html"
+        allow_issue_writing: false
+
+    - name: Upload ZAP Baseline report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zap-baseline-report
+        path: zap-baseline-report.html
+
+zap-api:
+  runs-on: ubuntu-latest
+  needs: [build-app, fuzzing]
+
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download JAR artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: vuln-app
+        path: ./target
+
+    - name: Create ZAP rules file
+      run: touch zap-rules.tsv
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Run application
+      run: |
+        java -jar target/*.jar &
+        sleep 30
+
+    - name: Make workspace writable for ZAP
+      run: chmod -R 777 "$GITHUB_WORKSPACE"
+
+    - name: ZAP API Scan
+      uses: zaproxy/action-api-scan@v0.10.0
+      continue-on-error: true
+      with:
+        target: "http://localhost:8080/v3/api-docs"
+        rules_file_name: "zap-rules.tsv"
+        cmd_options: "-f openapi -r zap-api-report.html"
+        allow_issue_writing: false
+
+    - name: Upload ZAP API report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zap-api-report
+        path: zap-api-report.html
+
+pipeline-summary:
+  name: Pipeline Summary
+  runs-on: ubuntu-latest
+  needs: [secret-check-bash-only, build-app, sast, sca, fuzzing, zap-baseline, zap-api]
+  if: always()
+
+  steps:
+    - name: Create summary
+      run: |
+        echo "# Security Pipeline Results" > summary.md
+        echo "Date: $(date)" >> summary.md
+        echo "" >> summary.md
+        echo "## Job Status" >> summary.md
+        echo "- Secret Detection: ${{ needs.secret-check-bash-only.result }}" >> summary.md
+        echo "- Build: ${{ needs.build-app.result }}" >> summary.md
+        echo "- SAST: ${{ needs.sast.result }}" >> summary.md
+        echo "- SCA: ${{ needs.sca.result }}" >> summary.md
+        echo "- Fuzzing Test: ${{ needs.fuzzing.result }}" >> summary.md
+        echo "- DAST (ZAP Baseline): ${{ needs.zap-baseline.result }}" >> summary.md
+        echo "- DAST (ZAP API): ${{ needs.zap-api.result }}" >> summary.md
+        echo "" >> summary.md
+        echo "## Security Test Coverage" >> summary.md
+        echo "- Static Analysis (SAST/SCA)" >> summary.md
+        echo "- Dynamic Analysis (DAST)" >> summary.md
+        echo "- Fuzzing (Black-box testing)" >> summary.md
+        echo "- Secret Detection" >> summary.md
+        if [[ "${{ needs.secret-check-bash-only.result }}" == "failure" ]]; then
+          echo "Pipeline blocked: Secrets detected" >> $GITHUB_STEP_SUMMARY
+          echo "::error::Secrets detected in code" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.secret-check-bash-only.result }}" == "success" ]]; then
+          echo "No secrets detected - Pipeline passed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Secret check status: ${{ needs.secret-check-bash-only.result }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        if [[ "${{ needs.fuzzing.result }}" == "success" ]]; then
+          echo "Fuzzing completed successfully" >> $GITHUB_STEP_SUMMARY
+        elif [[ "${{ needs.fuzzing.result }}" == "failure" ]]; then
+          echo "Fuzzing found potential issues" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Upload summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: pipeline-summary
+        path: summary.md
