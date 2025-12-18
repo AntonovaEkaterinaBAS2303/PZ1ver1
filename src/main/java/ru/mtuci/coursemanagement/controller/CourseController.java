@@ -23,7 +23,6 @@ import java.util.List;
 
 @Slf4j
 @Controller
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class CourseController {
     private final CourseRepository repo;
@@ -76,6 +75,11 @@ public class CourseController {
     @GetMapping("/api/courses/import")
     @ResponseBody
     public String importFromUrl(@RequestParam String url) {
+        // Проверить, что URL внутренний
+        if (!url.startsWith("https://internal-data.mtuci.ru/")) {
+            return "Доступ запрещен";
+        }
+
         RestTemplate rt = new RestTemplate();
         String json = rt.getForObject(url, String.class);
         log.info("Импортированы данные курсов (raw): {}", json);
