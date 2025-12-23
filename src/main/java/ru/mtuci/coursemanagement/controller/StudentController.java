@@ -20,7 +20,6 @@ import ru.mtuci.coursemanagement.repository.StudentRepository;
 import java.util.List;
 
 @Controller
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class StudentController {
     private final StudentRepository repo;
