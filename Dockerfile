@@ -1,10 +1,10 @@
-# Используем официальный образ OpenJDK 17
+# Используем официальный образ OpenJDK 17 с Alpine
 FROM eclipse-temurin:17-jre-alpine
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Добавляем метаданные (без переменных GitHub Actions)
+# Добавляем метаданные
 LABEL org.opencontainers.image.description="Application Docker Image"
 
 # Копируем JAR файл в контейнер
