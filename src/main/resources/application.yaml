@@ -20,10 +20,25 @@ management:
   endpoints:
     web:
       exposure:
-        include: "*"
+        include: "health"
+  endpoint:
+    health:
+      show-details: never
 server:
   error:
-    include-stacktrace: ALWAYS
+    include-stacktrace: NEVER
+  servlet:
+    session:
+      cookie:
+        same-site: strict
+        http-only: true
 app:
   plugin:
     url:
+logging:
+  level:
+    ru.mtuci.coursemanagement.config.SecurityAuditLogger: WARN
+  file:
+    name: security-audit.log
+  pattern:
+    file: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
